@@ -16,6 +16,8 @@
   const AUTO_CHILD_DY = 132;
   const AUTO_SIBLING_STEP_Y = 112;
   const SIBLING_SUBTREE_GAP = 48;
+  /** Khoảng dọc giữa các con của task gốc (ví dụ Upgrade UX ngay dưới nhánh Setup UI). */
+  const ROOT_CHILD_STACK_GAP = 8;
   const SIBLING_BRANCH_GAP_X = 260;
   const ROOT_SUBTREE_GAP = 56;
   const DRAG_EDGE_PX = 11;
@@ -511,8 +513,8 @@
       skipRelayout: true,
       skipFocusTaskBody: true,
     });
-    const t4x = p1 ? p1.x + AUTO_CHILD_DX : t2x;
-    const t4y = p1 ? p1.y + AUTO_CHILD_DY : t2y;
+    const t4x = p1 ? p1.x + AUTO_CHILD_DX : baseX + AUTO_CHILD_DX;
+    const t4y = p1 ? p1.y + AUTO_CHILD_DY : baseY + AUTO_CHILD_DY;
     createTaskNode("t4", "t1", t4x, t4y, true, {
       text: "Upgrade UX",
       silent: true,
@@ -979,18 +981,24 @@
       } else {
         const first = children[0];
         const prev = children[i - 1];
-        const firstHasNested = getChildren(first.id).length > 0;
         const onlyTwo = children.length === 2;
         const secondIsLeaf = getChildren(c.id).length === 0;
+        const firstHasNested = getChildren(first.id).length > 0;
         const branchBesideFirst =
-          onlyTwo && i === 1 && firstHasNested && secondIsLeaf;
+          onlyTwo &&
+          i === 1 &&
+          secondIsLeaf &&
+          firstHasNested &&
+          node.parentId != null;
         if (branchBesideFirst) {
           targetX = first.x + SIBLING_BRANCH_GAP_X;
           targetY = first.y;
         } else {
           const b = subtreeBoundsPx(prev);
+          const stackGap =
+            node.parentId == null ? ROOT_CHILD_STACK_GAP : SIBLING_SUBTREE_GAP;
           targetX = children[0].x;
-          targetY = b.maxY + SIBLING_SUBTREE_GAP + taskHalfHeight(c);
+          targetY = b.maxY + stackGap + taskHalfHeight(c);
         }
       }
       const dx = targetX - c.x;
@@ -1188,8 +1196,54 @@
     return btn;
   }
 
-  function computeConnectorPath(p1x, p1y, midY, childLeft) {
-    const goRight = childLeft >= p1x;
+  /**
+   * @param {number} edgeX cạnh trái hoặc phải của parent (world px)
+   * @param {"left" | "right"} side
+   */
+  function computeSideRailPath(edgeX, edgeY, midY, childLeft, side) {
+    const maxR = 16;
+    const distV = Math.abs(midY - edgeY);
+    const distH = Math.abs(childLeft - edgeX);
+    let r = Math.min(maxR, distV / 2, distH / 2);
+    if (r < 3) r = 0;
+    if (r === 0) {
+      return [`M ${edgeX} ${edgeY}`, `L ${edgeX} ${midY}`, `L ${childLeft} ${midY}`].join(" ");
+    }
+    if (side === "right") {
+      if (midY >= edgeY) {
+        return [
+          `M ${edgeX} ${edgeY}`,
+          `L ${edgeX} ${midY - r}`,
+          `A ${r} ${r} 0 0 0 ${edgeX - r} ${midY}`,
+          `L ${childLeft} ${midY}`,
+        ].join(" ");
+      }
+      return [
+        `M ${edgeX} ${edgeY}`,
+        `L ${edgeX} ${midY + r}`,
+        `A ${r} ${r} 0 0 1 ${edgeX - r} ${midY}`,
+        `L ${childLeft} ${midY}`,
+      ].join(" ");
+    }
+    if (midY >= edgeY) {
+      return [
+        `M ${edgeX} ${edgeY}`,
+        `L ${edgeX} ${midY - r}`,
+        `A ${r} ${r} 0 0 1 ${edgeX + r} ${midY}`,
+        `L ${childLeft} ${midY}`,
+      ].join(" ");
+    }
+    return [
+      `M ${edgeX} ${edgeY}`,
+      `L ${edgeX} ${midY + r}`,
+      `A ${r} ${r} 0 0 0 ${edgeX + r} ${midY}`,
+      `L ${childLeft} ${midY}`,
+    ].join(" ");
+  }
+
+  /** @param {number} childCenterX tâm X của nút con — dùng cho hướng nhánh ngang */
+  function computeConnectorPath(p1x, p1y, midY, childLeft, childCenterX) {
+    const goRight = childCenterX >= p1x;
     const maxR = 20;
     let cornerR = Math.min(
       maxR,
@@ -1266,15 +1320,34 @@
 
     const ph = parent.el.offsetHeight;
     const pw = parent.el.offsetWidth;
-    const ch = child.el.offsetHeight;
     const cw = child.el.offsetWidth;
 
+    const parentLeft = parent.x - pw / 2;
+    const parentRight = parent.x + pw / 2;
+    const parentTop = parent.y - ph / 2;
+    const parentBottom = parent.y + ph / 2;
     const p1x = parent.x;
-    const p1y = parent.y + ph / 2;
+    const p1y = parentBottom;
     const midY = child.y;
     const childLeft = child.x - cw / 2;
 
-    const { d } = computeConnectorPath(p1x, p1y, midY, childLeft);
+    function bottomExitHorizontalCrossesParent() {
+      if (midY <= parentTop || midY >= parentBottom) return false;
+      const xLo = Math.min(p1x, childLeft);
+      const xHi = Math.max(p1x, childLeft);
+      return xHi > parentLeft && xLo < parentRight;
+    }
+
+    let d;
+    if (bottomExitHorizontalCrossesParent()) {
+      if (child.x >= parent.x) {
+        d = computeSideRailPath(parentRight, parent.y, midY, childLeft, "right");
+      } else {
+        d = computeSideRailPath(parentLeft, parent.y, midY, childLeft, "left");
+      }
+    } else {
+      d = computeConnectorPath(p1x, p1y, midY, childLeft, child.x).d;
+    }
     child.path.setAttribute("d", d);
 
     if (child.doneCheckEl) {
@@ -1649,6 +1722,23 @@
       return;
     }
 
+    if (!typing && e.code === "Delete" && selectedTaskId && !e.repeat) {
+      const insp = document.getElementById("task-inspector");
+      const ae = document.activeElement;
+      const inInspector =
+        insp &&
+        ae instanceof Node &&
+        insp.contains(ae) &&
+        ae !== insp;
+      if (!inInspector) {
+        e.preventDefault();
+        const id = selectedTaskId;
+        if (!window.confirm("Xóa task này và toàn bộ nhánh con?")) return;
+        deleteSubtree(id);
+        return;
+      }
+    }
+
     if (
       !typing &&
       canvas === document.activeElement &&
@@ -1683,7 +1773,7 @@
     if (!typing && e.code === "Slash" && e.shiftKey) {
       e.preventDefault();
       window.alert(
-        "Phím tắt:\n• Ctrl/⌘+S: lưu ngay vào trình duyệt\n• Bánh xe: zoom tại con trỏ (50%–200%)\n• Chuột trái trên nền canvas, chuột giữa, hoặc Space + kéo: pan\n• + / - khi ô canvas đang focus: zoom\n• 0 khi canvas focus: về 100%\n• ESC: hủy đặt task gốc\n• Xóa task: nút trong Inspector\n• Shift+?: mở lại hộp này",
+        "Phím tắt:\n• Ctrl/⌘+S: lưu ngay vào trình duyệt\n• Bánh xe: zoom tại con trỏ (50%–200%)\n• Chuột trái trên nền canvas, chuột giữa, hoặc Space + kéo: pan\n• + / - khi ô canvas đang focus: zoom\n• 0 khi canvas focus: về 100%\n• ESC: hủy đặt task gốc\n• Delete: xóa task/subtask đang chọn và cả nhánh con (trừ khi đang gõ hoặc focus Inspector)\n• Shift+?: mở lại hộp này",
       );
     }
   });
