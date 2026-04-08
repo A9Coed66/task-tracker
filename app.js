@@ -579,7 +579,8 @@
         t.doneCheckEl.setAttribute("aria-checked", "true");
       }
     }
-    relayoutEntireForest();
+    /* Tránh relayoutEntireForest() khi load — giữ nguyên x/y đã lưu (không reflow các cây gốc). */
+    requestAnimationFrame(() => redrawAllConnectors());
     refreshTaskDoneVisuals();
   }
 
