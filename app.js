@@ -19,10 +19,14 @@
   const SIBLING_BRANCH_GAP_X = 260;
   const ROOT_SUBTREE_GAP = 56;
   const DRAG_EDGE_PX = 11;
+  const NEW_SUBTASK_BELOW_GAP = 36;
+  const BG_PAN_THRESHOLD_PX = 6;
 
   const STORAGE_KEY = "task-canvas-work-v1";
   const INSPECTOR_PREFS_KEY = "task-canvas-inspector-prefs";
   const DEFAULT_FONT_PREFS_KEY = "task-canvas-default-font-px";
+  const DEFAULT_BORDER_PREFS_KEY = "task-canvas-default-border";
+  const DEFAULT_BG_PREFS_KEY = "task-canvas-default-bg";
   const FONT_SIZE_MIN = 10;
   const FONT_SIZE_MAX = 40;
   let saveTimer = null;
@@ -69,6 +73,70 @@
     }
   }
 
+  function loadPreferredDefaultBorderHex() {
+    try {
+      const raw = localStorage.getItem(DEFAULT_BORDER_PREFS_KEY);
+      if (raw) {
+        const h = normalizeHexColor(raw.trim());
+        if (h) return h;
+      }
+    } catch (_) {
+      /* ignore */
+    }
+    return null;
+  }
+
+  function savePreferredDefaultBorderHex(hex) {
+    const h = normalizeHexColor(typeof hex === "string" ? hex.trim() : String(hex));
+    if (!h) return;
+    try {
+      localStorage.setItem(DEFAULT_BORDER_PREFS_KEY, h);
+    } catch (_) {
+      /* ignore */
+    }
+  }
+
+  function loadPreferredDefaultBgHex() {
+    try {
+      const raw = localStorage.getItem(DEFAULT_BG_PREFS_KEY);
+      if (raw) {
+        const h = normalizeHexColor(raw.trim());
+        if (h) return h;
+      }
+    } catch (_) {
+      /* ignore */
+    }
+    return null;
+  }
+
+  function savePreferredDefaultBgHex(hex) {
+    const h = normalizeHexColor(typeof hex === "string" ? hex.trim() : String(hex));
+    if (!h) return;
+    try {
+      localStorage.setItem(DEFAULT_BG_PREFS_KEY, h);
+    } catch (_) {
+      /* ignore */
+    }
+  }
+
+  function resolveInitialBorderColor(opts) {
+    if (opts != null && Object.prototype.hasOwnProperty.call(opts, "borderColor")) {
+      const bc = opts.borderColor;
+      if (bc == null || bc === "") return null;
+      return normalizeHexColor(String(bc));
+    }
+    return loadPreferredDefaultBorderHex();
+  }
+
+  function resolveInitialBgColor(opts) {
+    if (opts != null && Object.prototype.hasOwnProperty.call(opts, "bgColor")) {
+      const bc = opts.bgColor;
+      if (bc == null || bc === "") return null;
+      return normalizeHexColor(String(bc));
+    }
+    return loadPreferredDefaultBgHex();
+  }
+
   /** @type {{ tx: number, ty: number, s: number }} */
   let view = { tx: 0, ty: 0, s: 1 };
 
@@ -79,11 +147,109 @@
   /** @type {{ x: number, y: number, stx: number, sty: number } | null} */
   let viewPanDrag = null;
 
+  /** @type {{ x: number, y: number, stx: number, sty: number, ptrId: number } | null} */
+  let pendingBgPan = null;
+
   let idSeq = 1;
   const nextId = () => `t${idSeq++}`;
 
-  /** @type {{ id: string, parentId: string | null, x: number, y: number, relX: number | null, relY: number | null, el: HTMLElement, path: SVGPathElement | null, done: boolean, doneCheckEl: HTMLElement | null, alignH: "center" | "right" | null, borderColor: string | null, bgColor: string | null, fontSizePx: number }[]} */
+  /** @type {{ id: string, parentId: string | null, x: number, y: number, relX: number | null, relY: number | null, el: HTMLElement, path: SVGPathElement | null, done: boolean, doneCheckEl: HTMLElement | null, alignH: "center" | "right" | null, borderColor: string | null, bgColor: string | null, fontSizePx: number, collapsed: boolean, collapseToggleEl: HTMLElement | null }[]} */
   const tasks = [];
+
+  function taskHasChildren(t) {
+    return getChildren(t.id).length > 0;
+  }
+
+  function isHiddenByAncestorCollapse(t) {
+    let pid = t.parentId;
+    while (pid) {
+      const p = tasks.find((x) => x.id === pid);
+      if (!p) break;
+      if (p.collapsed && taskHasChildren(p)) return true;
+      pid = p.parentId;
+    }
+    return false;
+  }
+
+  function applyCollapseHiddenState() {
+    for (const t of tasks) {
+      const hidden = isHiddenByAncestorCollapse(t);
+      if (hidden) {
+        t.el.style.visibility = "hidden";
+        t.el.style.pointerEvents = "none";
+      } else {
+        t.el.style.visibility = "";
+        t.el.style.pointerEvents = "";
+      }
+      if (t.doneCheckEl) {
+        t.doneCheckEl.style.visibility = hidden ? "hidden" : "";
+      }
+    }
+    const sel = selectedTaskId ? tasks.find((x) => x.id === selectedTaskId) : null;
+    if (sel && isHiddenByAncestorCollapse(sel)) selectTask(null);
+  }
+
+  function removeCollapseToggle(task) {
+    if (!task.collapseToggleEl) return;
+    task.collapseToggleEl.remove();
+    task.collapseToggleEl = null;
+  }
+
+  /** @param {HTMLElement} btn @param {boolean} collapsed */
+  function setCollapseToggleIcon(btn, collapsed) {
+    if (collapsed) {
+      btn.textContent = "+";
+      btn.title = "Mở rộng nhánh con (đang thu gọn)";
+      btn.setAttribute("aria-label", "Mở rộng nhánh con");
+    } else {
+      btn.textContent = "\u2212";
+      btn.title = "Thu gọn nhánh con";
+      btn.setAttribute("aria-label", "Thu gọn nhánh con");
+    }
+  }
+
+  function makeCollapseToggleButton(task) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "task-collapse-toggle";
+    btn.setAttribute("aria-expanded", "true");
+    setCollapseToggleIcon(btn, !!task.collapsed);
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      if (!taskHasChildren(task)) return;
+      task.collapsed = !task.collapsed;
+      btn.classList.toggle("task-collapse-toggle--collapsed", task.collapsed);
+      btn.setAttribute("aria-expanded", task.collapsed ? "false" : "true");
+      setCollapseToggleIcon(btn, task.collapsed);
+      applyCollapseHiddenState();
+      redrawAllConnectors();
+      scheduleSave();
+    });
+    btn.addEventListener("pointerdown", (e) => e.stopPropagation());
+    return btn;
+  }
+
+  function reconcileCollapseToggles() {
+    for (const t of tasks) {
+      if (!taskHasChildren(t)) {
+        removeCollapseToggle(t);
+        t.collapsed = false;
+        continue;
+      }
+      if (!t.collapseToggleEl) {
+        const btn = makeCollapseToggleButton(t);
+        const node = t.el.querySelector(".task-node");
+        if (node) node.insertBefore(btn, node.firstChild);
+        t.collapseToggleEl = btn;
+      }
+      t.collapseToggleEl.classList.toggle("task-collapse-toggle--collapsed", t.collapsed);
+      t.collapseToggleEl.setAttribute("aria-expanded", t.collapsed ? "false" : "true");
+      setCollapseToggleIcon(t.collapseToggleEl, t.collapsed);
+    }
+    applyCollapseHiddenState();
+    redrawAllConnectors();
+  }
 
   /** @param {EventTarget | null} el */
   function isTypingContext(el) {
@@ -101,6 +267,17 @@
 
   function getChildren(parentId) {
     return tasks.filter((t) => t.parentId === parentId);
+  }
+
+  /** Task gốc (parentId === null) chứa cây của `task`. */
+  function getRootTask(task) {
+    let cur = task;
+    while (cur.parentId) {
+      const p = tasks.find((x) => x.id === cur.parentId);
+      if (!p) return cur;
+      cur = p;
+    }
+    return cur;
   }
 
   function taskShowsCheckbox(t) {
@@ -140,7 +317,7 @@
       else removeDoneCheckbox(t);
     }
     refreshTaskDoneVisuals();
-    redrawAllConnectors();
+    reconcileCollapseToggles();
   }
 
   function themeColorToHex(varName) {
@@ -261,6 +438,7 @@
           borderColor: t.borderColor ?? null,
           bgColor: t.bgColor ?? null,
           fontSizePx: t.fontSizePx ?? getBaselineTaskFontPx(),
+          collapsed: taskHasChildren(t) ? !!t.collapsed : false,
         })),
         view: { tx: view.tx, ty: view.ty, s: view.s },
       };
@@ -312,6 +490,7 @@
       text: "Create the web",
       silent: true,
       skipRelayout: true,
+      skipFocusTaskBody: true,
     });
     const p1 = tasks.find((t) => t.id === "t1");
     const t2x = p1 ? p1.x + AUTO_CHILD_DX : baseX + AUTO_CHILD_DX;
@@ -320,6 +499,7 @@
       text: "Setup UI",
       silent: true,
       skipRelayout: true,
+      skipFocusTaskBody: true,
     });
     const p2 = tasks.find((t) => t.id === "t2");
     const t3x = p2 ? p2.x + AUTO_CHILD_DX : t2x + AUTO_CHILD_DX;
@@ -329,6 +509,7 @@
       done: true,
       silent: true,
       skipRelayout: true,
+      skipFocusTaskBody: true,
     });
     const t4x = p1 ? p1.x + AUTO_CHILD_DX : t2x;
     const t4y = p1 ? p1.y + AUTO_CHILD_DY : t2y;
@@ -336,6 +517,7 @@
       text: "Upgrade UX",
       silent: true,
       skipRelayout: true,
+      skipFocusTaskBody: true,
     });
     syncIdSeqAfterRestore();
     relayoutEntireForest();
@@ -377,11 +559,14 @@
         done: !!row.done,
         silent: true,
         skipRelayout: true,
+        skipFocusTaskBody: true,
         alignH: row.alignH,
-        borderColor: row.borderColor,
-        bgColor: row.bgColor,
+        restoreColorsExact: true,
+        borderColor: row.borderColor ?? null,
+        bgColor: row.bgColor ?? null,
         fontSizePx:
           typeof row.fontSizePx === "number" ? clampFontPx(row.fontSizePx) : getBaselineTaskFontPx(),
+        collapsed: !!row.collapsed,
       });
     }
     syncIdSeqAfterRestore();
@@ -449,6 +634,13 @@
     const panel = document.getElementById("inspector-panel");
     if (!panel) return;
 
+    document.getElementById("inspector-delete-task")?.addEventListener("click", () => {
+      const id = selectedTaskId;
+      if (!id) return;
+      if (!window.confirm("Xóa task này và toàn bộ nhánh con?")) return;
+      deleteSubtree(id);
+    });
+
     panel.addEventListener("click", (e) => {
       const hEl = /** @type {HTMLElement | null} */ (e.target).closest("[data-align-h]");
       if (hEl && panel.contains(hEl)) {
@@ -466,7 +658,10 @@
       const t = selectedTaskId ? tasks.find((x) => x.id === selectedTaskId) : null;
       const input = /** @type {HTMLInputElement} */ (e.target);
       if (!t) return;
-      t.borderColor = input.value.toLowerCase();
+      const h = normalizeHexColor(input.value);
+      if (!h) return;
+      t.borderColor = h;
+      savePreferredDefaultBorderHex(h);
       applyTaskVisualStyle(t);
       scheduleSave();
     });
@@ -474,7 +669,10 @@
       const t = selectedTaskId ? tasks.find((x) => x.id === selectedTaskId) : null;
       const input = /** @type {HTMLInputElement} */ (e.target);
       if (!t) return;
-      t.bgColor = input.value.toLowerCase();
+      const h = normalizeHexColor(input.value);
+      if (!h) return;
+      t.bgColor = h;
+      savePreferredDefaultBgHex(h);
       applyTaskVisualStyle(t);
       scheduleSave();
     });
@@ -482,7 +680,7 @@
     document.getElementById("inspector-border-reset")?.addEventListener("click", () => {
       const t = selectedTaskId ? tasks.find((x) => x.id === selectedTaskId) : null;
       if (!t) return;
-      t.borderColor = null;
+      t.borderColor = loadPreferredDefaultBorderHex();
       applyTaskVisualStyle(t);
       refreshInspector();
       scheduleSave();
@@ -490,7 +688,7 @@
     document.getElementById("inspector-bg-reset")?.addEventListener("click", () => {
       const t = selectedTaskId ? tasks.find((x) => x.id === selectedTaskId) : null;
       if (!t) return;
-      t.bgColor = null;
+      t.bgColor = loadPreferredDefaultBgHex();
       applyTaskVisualStyle(t);
       refreshInspector();
       scheduleSave();
@@ -660,6 +858,7 @@
     for (const tid of all) {
       const t = tasks.find((x) => x.id === tid);
       if (!t) continue;
+      removeCollapseToggle(t);
       if (t.doneCheckEl) {
         t.doneCheckEl.remove();
         t.doneCheckEl = null;
@@ -675,7 +874,7 @@
     if (selectedTaskId && all.includes(selectedTaskId)) {
       selectTask(null);
     }
-    relayoutEntireForest();
+    redrawAllConnectors();
     scheduleSave();
   }
 
@@ -689,11 +888,14 @@
     el.style.top = `${cy}px`;
   }
 
-  function exitPlaceMode() {
+  /** @param {{ skipCanvasFocus?: boolean }=} opts */
+  function exitPlaceMode(opts) {
     placeMode = null;
     preview.hidden = true;
     document.body.classList.remove("placing");
-    canvas.focus();
+    if (!opts?.skipCanvasFocus) {
+      canvas.focus();
+    }
   }
 
   function startRootPlacement() {
@@ -813,6 +1015,18 @@
     redrawAllConnectors();
   }
 
+  /**
+   * Chỉ áp thuật toán bố trí nhánh cho một task gốc — không chạy layoutTree trên
+   * các cây khác, không reflow đẩy các task gốc khác (tránh lệch vị trí project khác).
+   * @param {string} rootId id của task gốc (parentId === null)
+   */
+  function relayoutForestScopedToRoot(rootId) {
+    const root = tasks.find((t) => t.id === rootId && t.parentId === null);
+    if (!root) return;
+    layoutTree(root);
+    redrawAllConnectors();
+  }
+
   function reflowRootSubtrees() {
     const roots = tasks.filter((t) => !t.parentId);
     if (roots.length <= 1) return;
@@ -830,18 +1044,36 @@
   }
 
   function refreshLayoutAfterChange() {
-    reflowRootSubtrees();
     redrawAllConnectors();
+  }
+
+  /** Cạnh dưới world (y + nửa chiều cao ô) của một task và toàn bộ cây con. */
+  function subtreeMaxBottomEdgeY(t) {
+    const h = t.el.offsetHeight || TH;
+    let bottom = t.y + h / 2;
+    for (const c of getChildren(t.id)) {
+      bottom = Math.max(bottom, subtreeMaxBottomEdgeY(c));
+    }
+    return bottom;
   }
 
   function createSubtaskAutomatically(parentId) {
     const parent = tasks.find((t) => t.id === parentId);
     if (!parent) return;
     const siblings = getChildren(parentId);
-    const idx = siblings.length;
     const absX = parent.x + AUTO_CHILD_DX;
-    const absY = parent.y + AUTO_CHILD_DY + idx * AUTO_SIBLING_STEP_Y;
-    createTaskNode(nextId(), parentId, absX, absY, true);
+    let absY;
+    if (siblings.length === 0) {
+      absY = parent.y + AUTO_CHILD_DY;
+    } else {
+      let maxBottom = -Infinity;
+      for (const s of siblings) {
+        maxBottom = Math.max(maxBottom, subtreeMaxBottomEdgeY(s));
+      }
+      absY = maxBottom + NEW_SUBTASK_BELOW_GAP + TH / 2;
+    }
+    createTaskNode(nextId(), parentId, absX, absY, true, { skipRelayout: true });
+    requestAnimationFrame(redrawAllConnectors);
   }
 
   function attachDragHandlers(node, wrap, task) {
@@ -1026,6 +1258,12 @@
     const child = tasks.find((t) => t.id === childId);
     if (!parent || !child || !child.path) return;
 
+    if (isHiddenByAncestorCollapse(child)) {
+      child.path.style.visibility = "hidden";
+      return;
+    }
+    child.path.style.visibility = "";
+
     const ph = parent.el.offsetHeight;
     const pw = parent.el.offsetWidth;
     const ch = child.el.offsetHeight;
@@ -1058,16 +1296,40 @@
   ro.observe(canvas);
   ro.observe(nodesLayer);
 
+  function focusNewTaskEditor(taskId) {
+    const t = tasks.find((x) => x.id === taskId);
+    const body = /** @type {HTMLElement | null} */ (t?.el.querySelector(".task-body"));
+    if (!body) return;
+    selectTask(taskId);
+    requestAnimationFrame(() => {
+      body.focus();
+      const sel = window.getSelection();
+      if (!sel) return;
+      try {
+        const range = document.createRange();
+        range.selectNodeContents(body);
+        range.collapse(false);
+        sel.removeAllRanges();
+        sel.addRange(range);
+      } catch (_) {
+        /* ignore */
+      }
+    });
+  }
+
   /**
    * @param {{
    *   text?: string,
    *   done?: boolean,
    *   silent?: boolean,
    *   skipRelayout?: boolean,
+   *   skipFocusTaskBody?: boolean,
    *   alignH?: string | null,
    *   borderColor?: string | null,
    *   bgColor?: string | null,
+   *   restoreColorsExact?: boolean,
    *   fontSizePx?: number,
+   *   collapsed?: boolean,
    * }=} opts
    */
   function createTaskNode(id, parentId, x, y, isSub, opts) {
@@ -1117,9 +1379,21 @@
       }
     }
 
-    const borderParsed =
-      opts?.borderColor != null ? normalizeHexColor(String(opts.borderColor)) : null;
-    const bgParsed = opts?.bgColor != null ? normalizeHexColor(String(opts.bgColor)) : null;
+    let borderParsed;
+    let bgParsed;
+    if (opts?.restoreColorsExact) {
+      borderParsed =
+        opts.borderColor != null && opts.borderColor !== ""
+          ? normalizeHexColor(String(opts.borderColor))
+          : null;
+      bgParsed =
+        opts.bgColor != null && opts.bgColor !== ""
+          ? normalizeHexColor(String(opts.bgColor))
+          : null;
+    } else {
+      borderParsed = resolveInitialBorderColor(opts);
+      bgParsed = resolveInitialBgColor(opts);
+    }
 
     const fontPx =
       opts != null && typeof opts.fontSizePx === "number"
@@ -1141,6 +1415,8 @@
       borderColor: borderParsed,
       bgColor: bgParsed,
       fontSizePx: fontPx,
+      collapsed: !!opts?.collapsed,
+      collapseToggleEl: null,
     };
 
     applyDomPosition(task);
@@ -1163,6 +1439,7 @@
       "pointerdown",
       (e) => {
         if (e.target.closest(".add-sub")) return;
+        if (e.target.closest(".task-collapse-toggle")) return;
         selectTask(id);
       },
       true,
@@ -1173,9 +1450,14 @@
     }
 
     if (!opts?.skipRelayout) {
-      requestAnimationFrame(() => relayoutEntireForest());
+      const scopeRoot = getRootTask(task);
+      requestAnimationFrame(() => relayoutForestScopedToRoot(scopeRoot.id));
     }
     if (!opts?.silent) scheduleSave();
+
+    if (!opts?.skipFocusTaskBody) {
+      focusNewTaskEditor(id);
+    }
 
     body.addEventListener("input", () => {
       scheduleSave();
@@ -1190,7 +1472,7 @@
     if (!placeMode || placeMode.mode !== "root") return;
     const p = clientToWorld(clientX, clientY);
     createTaskNode(nextId(), null, p.x, p.y, false);
-    exitPlaceMode();
+    exitPlaceMode({ skipCanvasFocus: true });
   }
 
   canvas.addEventListener("dblclick", (e) => {
@@ -1198,6 +1480,7 @@
     if (!canvas.contains(e.target)) return;
     if (e.target.closest(".task-wrap")) return;
     if (e.target.closest(".done-check")) return;
+    if (e.target.closest(".task-collapse-toggle")) return;
     startRootPlacement();
     onCanvasMouseMove(e);
   });
@@ -1227,8 +1510,9 @@
     }
     const canBgPan = e.button === 0 && !placeMode && isCanvasBackgroundTarget(raw);
     const canSpacePan = e.button === 0 && spacePanDown && canvas.contains(e.target);
-    if (canBgPan || canSpacePan) {
+    if (canSpacePan) {
       e.preventDefault();
+      pendingBgPan = null;
       viewPanDrag = {
         x: e.clientX,
         y: e.clientY,
@@ -1242,6 +1526,14 @@
       } catch (_) {
         /* ignore */
       }
+    } else if (canBgPan) {
+      pendingBgPan = {
+        x: e.clientX,
+        y: e.clientY,
+        stx: view.tx,
+        sty: view.ty,
+        ptrId: e.pointerId,
+      };
     }
   });
 
@@ -1284,6 +1576,26 @@
   });
 
   viewport.addEventListener("pointermove", (e) => {
+    if (pendingBgPan && e.pointerId === pendingBgPan.ptrId) {
+      const dx = e.clientX - pendingBgPan.x;
+      const dy = e.clientY - pendingBgPan.y;
+      if (dx * dx + dy * dy >= BG_PAN_THRESHOLD_PX * BG_PAN_THRESHOLD_PX) {
+        viewPanDrag = {
+          x: pendingBgPan.x,
+          y: pendingBgPan.y,
+          stx: pendingBgPan.stx,
+          sty: pendingBgPan.sty,
+          ptrId: pendingBgPan.ptrId,
+        };
+        pendingBgPan = null;
+        viewport?.classList.add("is-panning");
+        try {
+          viewport.setPointerCapture(e.pointerId);
+        } catch (_) {
+          /* ignore */
+        }
+      }
+    }
     if (!viewPanDrag) return;
     view.tx = viewPanDrag.stx + (e.clientX - viewPanDrag.x);
     view.ty = viewPanDrag.sty + (e.clientY - viewPanDrag.y);
@@ -1292,6 +1604,9 @@
   });
 
   function endViewPan(e) {
+    if (pendingBgPan && (!e || e.pointerId === pendingBgPan.ptrId)) {
+      pendingBgPan = null;
+    }
     if (!viewPanDrag) return;
     if (e && e.pointerId !== viewPanDrag.ptrId) return;
     try {
@@ -1334,14 +1649,6 @@
       return;
     }
 
-    if (!typing && (e.key === "Delete" || e.key === "Backspace")) {
-      if (selectedTaskId) {
-        e.preventDefault();
-        deleteSubtree(selectedTaskId);
-      }
-      return;
-    }
-
     if (
       !typing &&
       canvas === document.activeElement &&
@@ -1376,7 +1683,7 @@
     if (!typing && e.code === "Slash" && e.shiftKey) {
       e.preventDefault();
       window.alert(
-        "Phím tắt:\n• Del/Backspace: xóa ô đang chọn (cả cây con) — không áp khi đang gõ trong ô\n• Ctrl/⌘+S: lưu ngay vào trình duyệt\n• Bánh xe: zoom tại con trỏ (50%–200%)\n• Chuột trái trên nền canvas, chuột giữa, hoặc Space + kéo: pan\n• + / - khi ô canvas đang focus: zoom\n• 0 khi canvas focus: về 100%\n• ESC: hủy đặt task gốc\n• Shift+?: mở lại hộp này",
+        "Phím tắt:\n• Ctrl/⌘+S: lưu ngay vào trình duyệt\n• Bánh xe: zoom tại con trỏ (50%–200%)\n• Chuột trái trên nền canvas, chuột giữa, hoặc Space + kéo: pan\n• + / - khi ô canvas đang focus: zoom\n• 0 khi canvas focus: về 100%\n• ESC: hủy đặt task gốc\n• Xóa task: nút trong Inspector\n• Shift+?: mở lại hộp này",
       );
     }
   });

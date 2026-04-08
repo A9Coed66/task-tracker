@@ -404,6 +404,38 @@ body {
   outline-offset: 2px;
 }
 
+.inspector__delete {
+  width: 100%;
+  margin: 0 0 0.35rem;
+  padding: 0.45rem 0.6rem;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, #c62828 55%, var(--task-border));
+  background: transparent;
+  color: #b71c1c;
+  font: inherit;
+  font-size: 0.82rem;
+  cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+
+:root[data-theme="dark"] .inspector__delete {
+  color: #fca5a5;
+  border-color: color-mix(in srgb, #fca5a5 45%, var(--task-border));
+}
+
+.inspector__delete:hover {
+  background: color-mix(in srgb, #c62828 12%, transparent);
+}
+
+:root[data-theme="dark"] .inspector__delete:hover {
+  background: color-mix(in srgb, #fca5a5 14%, transparent);
+}
+
+.inspector__delete:focus-visible {
+  outline: 2px solid var(--task-focus);
+  outline-offset: 2px;
+}
+
 .seg {
   display: flex;
   gap: 4px;
@@ -661,6 +693,51 @@ html[data-theme="dark"] .theme-toggle {
 .task-wrap > .task-node {
   position: relative;
   flex-shrink: 0;
+}
+
+.task-collapse-toggle {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 6;
+  box-sizing: border-box;
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--task-border);
+  border-radius: 4px;
+  background: var(--task-bg);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+  font-family: inherit;
+  cursor: pointer;
+  box-shadow: 0 1px 4px var(--shadow);
+  transition: opacity 0.15s ease, border-color 0.12s ease, background 0.12s ease;
+}
+
+.task-collapse-toggle:hover {
+  border-color: var(--accent);
+  background: var(--add-sub-hover-bg);
+}
+
+.task-collapse-toggle:focus-visible {
+  outline: 2px solid var(--task-focus);
+  outline-offset: 2px;
+}
+
+.task-collapse-toggle--collapsed {
+  opacity: 0.4;
+}
+
+.task-collapse-toggle--collapsed:hover {
+  opacity: 0.75;
 }
 
 .task-wrap--done > .task-node {
