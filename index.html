@@ -80,6 +80,14 @@
             </fieldset>
 
             <div class="inspector__fieldset inspector__fieldset--noframe">
+              <span class="inspector__label" id="label-font-size">Cỡ chữ (px)</span>
+              <div class="inspector__row inspector__row--color">
+                <input type="number" id="inspector-font-size" class="inspector__font-size" min="10" max="40" step="1" aria-labelledby="label-font-size" />
+                <button type="button" class="inspector__reset inspector__reset--narrow" id="inspector-font-size-reset">Reset</button>
+              </div>
+            </div>
+
+            <div class="inspector__fieldset inspector__fieldset--noframe">
               <span class="inspector__label" id="label-border-color">Màu viền</span>
               <div class="inspector__row inspector__row--color">
                 <input type="color" id="inspector-border-color" class="inspector__color inspector__color--wide" aria-labelledby="label-border-color" />

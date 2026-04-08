@@ -16,12 +16,58 @@
   const AUTO_CHILD_DY = 132;
   const AUTO_SIBLING_STEP_Y = 112;
   const SIBLING_SUBTREE_GAP = 48;
+  const SIBLING_BRANCH_GAP_X = 260;
   const ROOT_SUBTREE_GAP = 56;
   const DRAG_EDGE_PX = 11;
 
   const STORAGE_KEY = "task-canvas-work-v1";
   const INSPECTOR_PREFS_KEY = "task-canvas-inspector-prefs";
+  const DEFAULT_FONT_PREFS_KEY = "task-canvas-default-font-px";
+  const FONT_SIZE_MIN = 10;
+  const FONT_SIZE_MAX = 40;
   let saveTimer = null;
+
+  let baselineTaskFontPxCache = 0;
+  function getBaselineTaskFontPx() {
+    if (baselineTaskFontPxCache > 0) return baselineTaskFontPxCache;
+    const probe = document.createElement("div");
+    probe.className = "task-body";
+    probe.style.cssText =
+      "position:absolute;left:-9999px;top:0;visibility:hidden;pointer-events:none;";
+    probe.textContent = "M";
+    document.body.appendChild(probe);
+    const raw = parseFloat(getComputedStyle(probe).fontSize);
+    document.body.removeChild(probe);
+    baselineTaskFontPxCache = Math.round(raw) || 19;
+    return baselineTaskFontPxCache;
+  }
+
+  function clampFontPx(n) {
+    const fallback = getBaselineTaskFontPx();
+    if (typeof n !== "number" || isNaN(n)) return fallback;
+    return Math.min(FONT_SIZE_MAX, Math.max(FONT_SIZE_MIN, Math.round(n)));
+  }
+
+  function loadPreferredDefaultFontPx() {
+    try {
+      const raw = localStorage.getItem(DEFAULT_FONT_PREFS_KEY);
+      if (raw != null) {
+        const parsed = parseInt(raw, 10);
+        if (!isNaN(parsed)) return clampFontPx(parsed);
+      }
+    } catch (_) {
+      /* ignore */
+    }
+    return getBaselineTaskFontPx();
+  }
+
+  function savePreferredDefaultFontPx(px) {
+    try {
+      localStorage.setItem(DEFAULT_FONT_PREFS_KEY, String(clampFontPx(px)));
+    } catch (_) {
+      /* ignore */
+    }
+  }
 
   /** @type {{ tx: number, ty: number, s: number }} */
   let view = { tx: 0, ty: 0, s: 1 };
@@ -36,7 +82,7 @@
   let idSeq = 1;
   const nextId = () => `t${idSeq++}`;
 
-  /** @type {{ id: string, parentId: string | null, x: number, y: number, relX: number | null, relY: number | null, el: HTMLElement, path: SVGPathElement | null, done: boolean, doneCheckEl: HTMLElement | null, alignH: "center" | "right" | null, borderColor: string | null, bgColor: string | null }[]} */
+  /** @type {{ id: string, parentId: string | null, x: number, y: number, relX: number | null, relY: number | null, el: HTMLElement, path: SVGPathElement | null, done: boolean, doneCheckEl: HTMLElement | null, alignH: "center" | "right" | null, borderColor: string | null, bgColor: string | null, fontSizePx: number }[]} */
   const tasks = [];
 
   /** @param {EventTarget | null} el */
@@ -141,23 +187,25 @@
   function applyTaskVisualStyle(task) {
     const node = task.el.querySelector(".task-node");
     const body = task.el.querySelector(".task-body");
-    const mask = task.el.querySelector(".task-body-scalemask");
     if (!node || !body) return;
 
     const h = task.alignH || "left";
     body.style.textAlign = h === "left" ? "left" : h === "right" ? "right" : "center";
     body.style.alignItems = h === "left" ? "flex-start" : h === "right" ? "flex-end" : "center";
     body.style.justifyContent = "flex-start";
-    if (mask) {
-      mask.style.alignSelf =
-        h === "center" ? "center" : h === "right" ? "flex-end" : "flex-start";
-    }
 
     if (task.borderColor) node.style.borderColor = task.borderColor;
     else node.style.removeProperty("border-color");
 
     if (task.bgColor) node.style.backgroundColor = task.bgColor;
     else node.style.removeProperty("background-color");
+
+    const px =
+      typeof task.fontSizePx === "number" && !isNaN(task.fontSizePx)
+        ? clampFontPx(task.fontSizePx)
+        : loadPreferredDefaultFontPx();
+    task.fontSizePx = px;
+    body.style.fontSize = `${px}px`;
   }
 
   function canvasLocalXY(clientX, clientY) {
@@ -188,51 +236,6 @@
       const ty = Math.round(view.ty * 100) / 100;
       canvasWorld.style.transform = `translate(${tx}px, ${ty}px) scale(${view.s})`;
     }
-    requestAnimationFrame(syncAllTaskTextSharpness);
-  }
-
-  function syncTaskTextSharpness(task) {
-    const s = view.s;
-    if (!task?.el || s < 0.001) return;
-    const node = task.el.querySelector(".task-node");
-    const mask = task.el.querySelector(".task-body-scalemask");
-    const scalewrap = task.el.querySelector(".task-body-scalewrap");
-    const body = task.el.querySelector(".task-body");
-    if (!node || !mask || !scalewrap || !body) return;
-    const inv = 1 / s;
-    const cs = getComputedStyle(node);
-    const pl = parseFloat(cs.paddingLeft) || 0;
-    const pr = parseFloat(cs.paddingRight) || 0;
-    const innerW = Math.max(1, node.clientWidth - pl - pr);
-    const bodyMin = parseFloat(getComputedStyle(body).minHeight) || 56;
-    const bh = Math.max(body.scrollHeight, body.offsetHeight, bodyMin);
-
-    mask.style.width = `${innerW}px`;
-    mask.style.height = `${bh}px`;
-    const h = task.alignH || "left";
-    mask.style.alignSelf =
-      h === "center" ? "center" : h === "right" ? "flex-end" : "flex-start";
-
-    const Ws = innerW * s;
-    scalewrap.style.width = `${Ws}px`;
-    scalewrap.style.minHeight = `${bh * s}px`;
-    scalewrap.style.transform = `scale(${inv})`;
-    scalewrap.style.transformOrigin =
-      h === "center" ? "top center" : h === "right" ? "top right" : "top left";
-    if (h === "center") {
-      scalewrap.style.left = `${(innerW - Ws) / 2}px`;
-      scalewrap.style.right = "auto";
-    } else if (h === "right") {
-      scalewrap.style.left = "auto";
-      scalewrap.style.right = "0";
-    } else {
-      scalewrap.style.left = "0";
-      scalewrap.style.right = "auto";
-    }
-  }
-
-  function syncAllTaskTextSharpness() {
-    for (const t of tasks) syncTaskTextSharpness(t);
   }
 
   function flushSave() {
@@ -257,6 +260,7 @@
           alignH: t.alignH ?? null,
           borderColor: t.borderColor ?? null,
           bgColor: t.bgColor ?? null,
+          fontSizePx: t.fontSizePx ?? getBaselineTaskFontPx(),
         })),
         view: { tx: view.tx, ty: view.ty, s: view.s },
       };
@@ -327,7 +331,7 @@
       skipRelayout: true,
     });
     const t4x = p1 ? p1.x + AUTO_CHILD_DX : t2x;
-    const t4y = p1 ? p1.y + AUTO_CHILD_DY + AUTO_SIBLING_STEP_Y * 2 : t2y + 200;
+    const t4y = p1 ? p1.y + AUTO_CHILD_DY : t2y;
     createTaskNode("t4", "t1", t4x, t4y, true, {
       text: "Upgrade UX",
       silent: true,
@@ -376,6 +380,8 @@
         alignH: row.alignH,
         borderColor: row.borderColor,
         bgColor: row.bgColor,
+        fontSizePx:
+          typeof row.fontSizePx === "number" ? clampFontPx(row.fontSizePx) : getBaselineTaskFontPx(),
       });
     }
     syncIdSeqAfterRestore();
@@ -431,8 +437,12 @@
 
     const borderIn = document.getElementById("inspector-border-color");
     const bgIn = document.getElementById("inspector-bg-color");
+    const fontIn = /** @type {HTMLInputElement | null} */ (
+      document.getElementById("inspector-font-size")
+    );
     if (borderIn) borderIn.value = task.borderColor || themeColorToHex("--task-border");
     if (bgIn) bgIn.value = task.bgColor || themeColorToHex("--task-bg");
+    if (fontIn) fontIn.value = String(clampFontPx(task.fontSizePx));
   }
 
   function bindInspector() {
@@ -481,6 +491,30 @@
       const t = selectedTaskId ? tasks.find((x) => x.id === selectedTaskId) : null;
       if (!t) return;
       t.bgColor = null;
+      applyTaskVisualStyle(t);
+      refreshInspector();
+      scheduleSave();
+    });
+
+    document.getElementById("inspector-font-size")?.addEventListener("change", (e) => {
+      const t = selectedTaskId ? tasks.find((x) => x.id === selectedTaskId) : null;
+      const input = /** @type {HTMLInputElement} */ (e.target);
+      if (!t) return;
+      let v = parseInt(input.value, 10);
+      if (isNaN(v)) v = loadPreferredDefaultFontPx();
+      v = clampFontPx(v);
+      input.value = String(v);
+      t.fontSizePx = v;
+      savePreferredDefaultFontPx(v);
+      applyTaskVisualStyle(t);
+      scheduleSave();
+    });
+
+    document.getElementById("inspector-font-size-reset")?.addEventListener("click", () => {
+      const t = selectedTaskId ? tasks.find((x) => x.id === selectedTaskId) : null;
+      if (!t) return;
+      const d = loadPreferredDefaultFontPx();
+      t.fontSizePx = d;
       applyTaskVisualStyle(t);
       refreshInspector();
       scheduleSave();
@@ -741,10 +775,21 @@
         targetX = baseX;
         targetY = node.y + AUTO_CHILD_DY;
       } else {
+        const first = children[0];
         const prev = children[i - 1];
-        const b = subtreeBoundsPx(prev);
-        targetX = children[0].x;
-        targetY = b.maxY + SIBLING_SUBTREE_GAP + taskHalfHeight(c);
+        const firstHasNested = getChildren(first.id).length > 0;
+        const onlyTwo = children.length === 2;
+        const secondIsLeaf = getChildren(c.id).length === 0;
+        const branchBesideFirst =
+          onlyTwo && i === 1 && firstHasNested && secondIsLeaf;
+        if (branchBesideFirst) {
+          targetX = first.x + SIBLING_BRANCH_GAP_X;
+          targetY = first.y;
+        } else {
+          const b = subtreeBoundsPx(prev);
+          targetX = children[0].x;
+          targetY = b.maxY + SIBLING_SUBTREE_GAP + taskHalfHeight(c);
+        }
       }
       const dx = targetX - c.x;
       const dy = targetY - c.y;
@@ -766,7 +811,6 @@
     }
     reflowRootSubtrees();
     redrawAllConnectors();
-    requestAnimationFrame(syncAllTaskTextSharpness);
   }
 
   function reflowRootSubtrees() {
@@ -788,7 +832,6 @@
   function refreshLayoutAfterChange() {
     reflowRootSubtrees();
     redrawAllConnectors();
-    requestAnimationFrame(syncAllTaskTextSharpness);
   }
 
   function createSubtaskAutomatically(parentId) {
@@ -1010,10 +1053,7 @@
   }
 
   const ro = new ResizeObserver(() => {
-    requestAnimationFrame(() => {
-      redrawAllConnectors();
-      syncAllTaskTextSharpness();
-    });
+    requestAnimationFrame(redrawAllConnectors);
   });
   ro.observe(canvas);
   ro.observe(nodesLayer);
@@ -1027,6 +1067,7 @@
    *   alignH?: string | null,
    *   borderColor?: string | null,
    *   bgColor?: string | null,
+   *   fontSizePx?: number,
    * }=} opts
    */
   function createTaskNode(id, parentId, x, y, isSub, opts) {
@@ -1037,11 +1078,6 @@
 
     const node = document.createElement("div");
     node.className = "task-node";
-
-    const mask = document.createElement("div");
-    mask.className = "task-body-scalemask";
-    const scaleWrap = document.createElement("div");
-    scaleWrap.className = "task-body-scalewrap";
 
     const body = document.createElement("div");
     body.className = "task-body";
@@ -1066,9 +1102,7 @@
     });
 
     footer.appendChild(addBtn);
-    scaleWrap.appendChild(body);
-    mask.appendChild(scaleWrap);
-    node.appendChild(mask);
+    node.appendChild(body);
     node.appendChild(footer);
 
     const path = parentId ? makePathEl() : null;
@@ -1087,6 +1121,11 @@
       opts?.borderColor != null ? normalizeHexColor(String(opts.borderColor)) : null;
     const bgParsed = opts?.bgColor != null ? normalizeHexColor(String(opts.bgColor)) : null;
 
+    const fontPx =
+      opts != null && typeof opts.fontSizePx === "number"
+        ? clampFontPx(opts.fontSizePx)
+        : loadPreferredDefaultFontPx();
+
     const task = {
       id,
       parentId,
@@ -1101,6 +1140,7 @@
       alignH: coalesceAlignH(opts?.alignH),
       borderColor: borderParsed,
       bgColor: bgParsed,
+      fontSizePx: fontPx,
     };
 
     applyDomPosition(task);
@@ -1139,11 +1179,9 @@
 
     body.addEventListener("input", () => {
       scheduleSave();
-      requestAnimationFrame(() => syncTaskTextSharpness(task));
+      requestAnimationFrame(redrawAllConnectors);
     });
     body.addEventListener("pointerdown", (e) => e.stopPropagation());
-
-    requestAnimationFrame(() => syncTaskTextSharpness(task));
 
     return wrap;
   }

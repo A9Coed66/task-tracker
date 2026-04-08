@@ -337,6 +337,26 @@ body {
   border-radius: 6px;
 }
 
+.inspector__font-size {
+  flex: 1 1 auto;
+  min-width: 0;
+  width: auto;
+  box-sizing: border-box;
+  height: 2rem;
+  padding: 0 0.5rem;
+  font-size: 0.8125rem;
+  font-family: inherit;
+  color: var(--text);
+  background: var(--page-bg);
+  border: 1px solid var(--toolbar-border);
+  border-radius: 6px;
+}
+
+.inspector__font-size:focus-visible {
+  outline: 2px solid var(--task-focus);
+  outline-offset: 2px;
+}
+
 .inspector__color::-webkit-color-swatch-wrapper {
   padding: 1px;
 }
@@ -716,21 +736,6 @@ html[data-theme="dark"] .theme-toggle {
   color: var(--text);
 }
 
-.task-body-scalemask {
-  flex: 1 1 auto;
-  min-height: 3.5rem;
-  min-width: 0;
-  width: 100%;
-  position: relative;
-  overflow: hidden;
-}
-
-.task-body-scalewrap {
-  position: absolute;
-  top: 0;
-  box-sizing: border-box;
-}
-
 .task-node:focus-within {
   box-shadow: 0 0 0 2px var(--focus-ring);
 }
@@ -750,7 +755,7 @@ html[data-theme="dark"] .theme-toggle {
   justify-content: flex-start;
   align-items: flex-start;
   min-height: 3.5rem;
-  font-size: 0.95rem;
+  font-size: calc(0.95rem + 4px);
   line-height: 1.4;
   outline: none;
   text-align: left;
